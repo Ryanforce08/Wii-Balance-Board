@@ -104,6 +104,72 @@ if platform.system() == "Linux":
                     device.emit(uinput.BTN_A, 0)
 
             send_hid_output(device)
+elif platform.system() == "Windows":
+    import pywinusb.hid as hid
+    import pyvjoy
+    import time
+
+    raw_data = [0, 0, 0, 0]  # top-left, top-right, bottom-left, bottom-right
+    aButton = 0
+
+    # vJoy device: ID 1
+    j = pyvjoy.VJoyDevice(1)
+
+    def send_joystick_output():
+        total_weight = sum(raw_data)
+        if total_weight <= 5:
+            total_weight = 0.0000000001  # Prevent divide-by-zero
+
+        top = raw_data[0] + raw_data[1]
+        bottom = raw_data[2] + raw_data[3]
+        left = raw_data[0] + raw_data[2]
+        right = raw_data[1] + raw_data[3]
+
+        x = (right - left) / total_weight
+        y = (top - bottom) / total_weight
+
+        x = max(-1.0, min(1.0, x))
+        y = max(-1.0, min(1.0, y))
+
+        joy_x = int((x + 1) * 16383.5)  # vJoy axis range: 0–32767
+        joy_y = int((y + 1) * 16383.5)
+
+        j.set_axis(pyvjoy.HID_USAGE_X, joy_x)
+        j.set_axis(pyvjoy.HID_USAGE_Y, joy_y)
+
+        # Button A
+        j.set_button(1, 1 if aButton else 0)
+
+
+    def balance_board_handler(data):
+        global raw_data, aButton
+
+
+        print("Raw HID report:", data)
+        # raw_data = [parsed_top_left, top_right, bottom_left, bottom_right]
+
+        send_joystick_output()
+
+
+    def find_balance_board():
+        all_hids = hid.find_all_hid_devices()
+        for dev in all_hids:
+            if dev.vendor_id == 0x057e and dev.product_id == 0x0306:
+                return dev
+        return None
+
+
+    def start_board_reader():
+        board = None
+        print("Waiting for Balance Board (Windows)...")
+        while not board:
+            board = find_balance_board()
+            time.sleep(0.5)
+
+        print("Balance Board found!")
+
+        board.open()
+        board.set_raw_data_handler(balance_board_handler)
 
 
 ### --- Pygame Visualizer ---
