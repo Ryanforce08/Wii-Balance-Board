@@ -1,85 +1,77 @@
-# Wii Balance Board Visualizer + HID for Linux
+# Wii Balance Board Visualizer + HID
 
-This project turns a **Wii Balance Board** into a virtual **HID joystick** on **Linux**, while providing a real-time visualizer using **Pygame**. It reads pressure data from the board's four sensors, calculates the user's center of pressure, and sends that as joystick input via `uinput`.
-
-> **Note:** This only works on Linux systems due to reliance on `evdev` and `uinput`.
-
----
+A cross-platform Python tool to interface with the Wii Balance Board, visualize weight distribution in real time, and expose the board as a virtual HID joystick/gamepad (on Linux) or pass data for use with [WiiBalanceWalker](https://github.com/lshachar/WiiBalanceWalker) (on Windows).
 
 ## Features
 
-- Reads weight data from Wii Balance Board using `evdev`
-- Sends joystick-like HID input via `uinput`
-- Visualizes individual sensor data and user weight distribution with Pygame
-- Computes and displays the center of pressure
-
----
+- **Live Visualization**: Real-time display of weight on each sensor and the center of pressure.
+- **Virtual Joystick (Linux)**: Emulates a joystick device using `uinput`, making the balance board compatible with many games and applications.
+- **Windows Support**: Reads Wii Balance Board sensor data and can work with WiiBalanceWalker for virtual joystick output.
+- **Threaded Input**: Board input is read in a separate thread to keep the UI responsive.
 
 ## Requirements
 
-- **Linux OS**
-- Wii Balance Board connected via Bluetooth
+### Common
 - Python 3.7+
-- System packages:
-  - `libudev-dev`
-  - `libevdev-dev`
-- Python packages:
-  ```bash
-  pip install pygame evdev python-uinput
-⚠️ You may need to run the script with sudo due to permissions required for evdev and uinput.
+- [pygame](https://pypi.org/project/pygame/)
 
-How It Works
-Uses evdev to detect and read input from the Wii Balance Board.
+### Linux
+- [evdev](https://pypi.org/project/evdev/)
+- [python-uinput](https://pypi.org/project/python-uinput/)
 
-Normalizes sensor data into X/Y axes representing the user's balance.
+#### Install dependencies:
+```bash
+pip install pygame evdev python-uinput
+```
 
-Sends these values to a virtual joystick using python-uinput.
+### Windows
 
-Visualizes pressure and weight distribution in a 2D interface via pygame.
+- [pywinusb](https://pypi.org/project/pywinusb/)
+- [WiiBalanceWalker](https://github.com/lshachar/WiiBalanceWalker) (required for virtual joystick/HID functionality)
 
-Usage
-Connect your Wii Balance Board via Bluetooth.
+#### Install dependencies:
+```bash
+pip install pygame pywinusb
+```
 
-Run the script:
+#### Note:
+- On Windows, this script only reads the board data. You **must** run [WiiBalanceWalker](https://github.com/lshachar/WiiBalanceWalker) to create a virtual joystick for use in games.
+- Make sure your Wii Balance Board is paired and recognized by your PC.
 
-bash
-Copy
-Edit
-sudo python3 balance_board.py
-Step onto the board and observe both:
+## Usage
 
-Joystick movements (in compatible games or joystick testing tools)
+1. **Connect** your Wii Balance Board via Bluetooth and ensure it is powered on.
+2. **Run the script**:
 
-Real-time visualization in the Pygame window
+```bash
+python wii_balance_board_visualizer.py
+```
 
-File Overview
-File	Description
-balance_board.py	Main script to run the visualizer and HID system
-README.md	You're reading it
+- The UI window will show the board and live sensor readings.
+- For Linux, a virtual joystick device will be created; you can map this in games or other software.
+- For Windows, see [WiiBalanceWalker](https://github.com/lshachar/WiiBalanceWalker) for creating a virtual joystick.
 
-Notes
-Joystick output is centered at (128,128) and scaled within the [0,255] range.
+## Controls
 
-Total weight is shown in pounds (lbs), converted from the raw input.
+- **A Button**: If your Balance Board has an 'A' button, its state is also sent as joystick button 0 (Linux only).
 
-Sensor layout:
+## Troubleshooting
 
-less
-Copy
-Edit
-TL —— TR
- |      |
-BL —— BR
-Center-of-pressure is indicated by a red dot.
+- If the board is not found, ensure it is paired via Bluetooth and powered on.
+- On Linux, you may need to run as root or grant access to `/dev/uinput` and `/dev/input` devices.
+- On Windows, ensure [WiiBalanceWalker](https://github.com/lshachar/WiiBalanceWalker) is running if you need virtual joystick output.
+- The script automatically detects your OS and loads the appropriate backend.
 
-Troubleshooting
-Board not detected? Make sure it's connected and shows up via evdev-list-devices.
+## Acknowledgements
 
-Permission errors? Run with sudo, or adjust udev rules to allow access without root.
+- **WiiBalanceWalker** by [lshachar](https://github.com/lshachar/WiiBalanceWalker) for HID support on Windows.
+- `pywinusb`, `evdev`, and `uinput` for device IO.
+- Inspired by community efforts to make the Wii Balance Board accessible on PC.
 
-No output? Confirm your system recognizes the Wii Balance Board and the correct input codes are being emitted.
+## License
 
-Acknowledgments
-Inspired by various open-source Wii Balance Board integrations
+MIT License. See [LICENSE](LICENSE) for details.
 
-Thanks to the maintainers of evdev, python-uinput, and pygame
+---
+
+**Note:** This project is not affiliated with Nintendo.
