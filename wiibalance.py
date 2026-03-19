@@ -6,7 +6,35 @@ import time
 import pygame
 
 raw_data = [0.0, 0.0, 0.0, 0.0]  # TL, TR, BL, BR
+filtered_raw = [0.0, 0.0, 0.0, 0.0]
 aButton = False
+tare_offset = [0.0, 0.0, 0.0, 0.0]
+exact_mode = False
+NOISE_FLOOR_LBS = 0.01       # drop tiny sensor drift in normal mode
+NOISE_FLOOR_LBS_EXACT = 0.0001  # lighter floor in exact mode to keep precision
+TARE_STEP = 0.1  # per-click tare adjustment in lbs
+SMOOTH_ALPHA = 0.25  # 0=no smoothing, 1=no memory
+
+BG_COLOR = (20, 24, 36)
+BOARD_COLOR = (210, 215, 225)
+PAD_BASE_COLOR = (80, 140, 220)
+DOT_COLOR = (255, 70, 70)
+TEXT_COLOR = (240, 240, 240)
+BTN_COLOR = (60, 80, 120)
+BTN_COLOR_HOVER = (90, 120, 170)
+BTN_COLOR_ACTIVE = (120, 170, 80)
+
+
+def _get_adjusted_data():
+    # Subtract tare, then zero out tiny sensor drift using a small noise floor.
+    floor = NOISE_FLOOR_LBS_EXACT if exact_mode else NOISE_FLOOR_LBS
+    adjusted = [max(0.0, filtered_raw[i] - tare_offset[i]) for i in range(4)]
+    return [0.0 if val < floor else val for val in adjusted]
+
+
+def _update_filtered():
+    for i in range(4):
+        filtered_raw[i] = (SMOOTH_ALPHA * raw_data[i]) + ((1 - SMOOTH_ALPHA) * filtered_raw[i])
 
 ### --- Linux Input + HID Output ---
 if platform.system() == "Linux":
@@ -29,14 +57,17 @@ if platform.system() == "Linux":
         return uinput.Device(events, name="Wii Balance Board HID")
 
     def send_hid_output(device):
-        total_weight = sum(raw_data)
-        if total_weight <= 5:
-            total_weight = 0.0000000001  # Prevent divide-by-zero
+        adjusted = _get_adjusted_data()
+        total_weight = sum(adjusted)
+        if not exact_mode and total_weight <= 5:
+            total_weight = 0.0000000001  # Prevent divide-by-zero while idle
+        elif total_weight <= 0:
+            total_weight = 0.0000000001
 
-        top = raw_data[0] + raw_data[1]
-        bottom = raw_data[2] + raw_data[3]
-        left = raw_data[0] + raw_data[2]
-        right = raw_data[1] + raw_data[3]
+        top = adjusted[0] + adjusted[1]
+        bottom = adjusted[2] + adjusted[3]
+        left = adjusted[0] + adjusted[2]
+        right = adjusted[1] + adjusted[3]
 
         # Match red dot direction
         x = (right - left) / total_weight
@@ -55,7 +86,7 @@ if platform.system() == "Linux":
         device.emit(uinput.ABS_Y, joy_y)
 
         # Send raw pressures as analogs
-        # norm_data = [min(1.0, max(0.0, val / total_weight)) for val in raw_data]
+        # norm_data = [min(1.0, max(0.0, val / total_weight)) for val in adjusted]
 
         # device.emit(uinput.ABS_RX, int(norm_data[0] * 255))
         # device.emit(uinput.ABS_RY, int(norm_data[1] * 255))
@@ -103,12 +134,15 @@ if platform.system() == "Linux":
                 else:
                     device.emit(uinput.BTN_A, 0)
 
+            _update_filtered()
             send_hid_output(device)
 
 ### --- Windows Input (HID) + Output (vJoy) ---
 elif platform.system() == "Windows":
     import hid
     import pyvjoy
+
+    VJOY_DEVICE_ID = 1
 
     NINTENDO_VID = 0x057E
     BALANCE_BOARD_PID = 0x0306
@@ -129,21 +163,48 @@ elif platform.system() == "Windows":
         "BL": [7500, 13000, 18500],
     }
 
-    def create_virtual_joystick():
-        """Acquire vJoy device 1."""
-        j = pyvjoy.VJoyDevice(1)
-        j.reset()
-        return j
+    def _clamp_axis(val):
+        return max(VJOY_MIN, min(VJOY_MAX, val))
+
+    def _ensure_vjoy_device(device_id=VJOY_DEVICE_ID):
+        try:
+            j = pyvjoy.VJoyDevice(device_id)
+            j.reset()
+            # Center axes once to validate the device is usable.
+            j.set_axis(pyvjoy.HID_USAGE_X, VJOY_CENTER)
+            j.set_axis(pyvjoy.HID_USAGE_Y, VJOY_CENTER)
+            return j
+        except pyvjoy.exceptions.vJoyException:
+            return None
+
+    def create_virtual_joystick(max_wait=10.0, interval=1.0):
+        start = time.time()
+        attempt = 1
+        while time.time() - start < max_wait:
+            j = _ensure_vjoy_device()
+            if j:
+                return j
+            print(
+                f"vJoy device not available (attempt {attempt}). "
+                "Open vJoyConf, ensure device 1 exists with X/Y axes enabled, "
+                "then keep this app running—will retry."
+            )
+            attempt += 1
+            time.sleep(interval)
+        raise SystemExit("vJoy device missing; configure it in vJoyConf and rerun.")
 
     def send_hid_output(j):
-        total_weight = sum(raw_data)
-        if total_weight <= 5:
-            total_weight = 0.0000000001  # Prevent divide-by-zero
+        adjusted = _get_adjusted_data()
+        total_weight = sum(adjusted)
+        if not exact_mode and total_weight <= 5:
+            total_weight = 0.0000000001  # Prevent divide-by-zero while idle
+        elif total_weight <= 0:
+            total_weight = 0.0000000001
 
-        top = raw_data[0] + raw_data[1]
-        bottom = raw_data[2] + raw_data[3]
-        left = raw_data[0] + raw_data[2]
-        right = raw_data[1] + raw_data[3]
+        top = adjusted[0] + adjusted[1]
+        bottom = adjusted[2] + adjusted[3]
+        left = adjusted[0] + adjusted[2]
+        right = adjusted[1] + adjusted[3]
 
         # Match red dot direction
         x = (right - left) / total_weight
@@ -152,14 +213,28 @@ elif platform.system() == "Windows":
         # Clamp to range [-1, 1]
         x = max(-1.0, min(1.0, x))
         y = max(-1.0, min(1.0, y))
-        print(f"X: {x:.3f}, Y: {y:.3f}")
 
         # Convert to vJoy range [0x1, 0x8000] where 0x4000 is center
-        joy_x = int((x + 1.0) / 2.0 * (VJOY_MAX - VJOY_MIN) + VJOY_MIN)
-        joy_y = int((y + 1.0) / 2.0 * (VJOY_MAX - VJOY_MIN) + VJOY_MIN)
+        joy_x = _clamp_axis(int((x + 1.0) / 2.0 * (VJOY_MAX - VJOY_MIN) + VJOY_MIN))
+        joy_y = _clamp_axis(int((y + 1.0) / 2.0 * (VJOY_MAX - VJOY_MIN) + VJOY_MIN))
 
-        j.set_axis(pyvjoy.HID_USAGE_X, joy_x)
-        j.set_axis(pyvjoy.HID_USAGE_Y, joy_y)
+        try:
+            j.set_axis(pyvjoy.HID_USAGE_X, joy_x)
+            j.set_axis(pyvjoy.HID_USAGE_Y, joy_y)
+        except pyvjoy.exceptions.vJoyException:
+            print(
+                "vJoy rejected axis update. Attempting to reinitialize vJoy device..."
+            )
+            new_j = _ensure_vjoy_device()
+            if new_j:
+                joystick_handle = new_j
+                joystick_handle.set_axis(pyvjoy.HID_USAGE_X, joy_x)
+                joystick_handle.set_axis(pyvjoy.HID_USAGE_Y, joy_y)
+                return joystick_handle
+            print(
+                "vJoy still unavailable. Verify vJoy service is running and device has X/Y axes enabled."
+            )
+            raise
 
     # -- Wiimote HID protocol helpers --
 
@@ -324,6 +399,7 @@ elif platform.system() == "Windows":
                 raw_data[2] = _calc_weight(bl, "BL")
                 raw_data[3] = _calc_weight(br, "BR")
 
+                _update_filtered()
                 send_hid_output(joystick)
 
             elif report_id == 0x20:
@@ -332,12 +408,38 @@ elif platform.system() == "Windows":
 
 
 ### --- Pygame Visualizer ---
-def draw_board(screen, font):
-    screen.fill((30, 30, 30))
+def _layout_buttons(w, h, font, specs, max_cols=4):
+    btn_w, btn_h = 140, 40
+    spacing = 12
+    layout = []
+    rows = (len(specs) + max_cols - 1) // max_cols
+    total_height = rows * btn_h + (rows - 1) * spacing
+    start_y = h - total_height - 20
+    for idx, spec in enumerate(specs):
+        row = idx // max_cols
+        col = idx % max_cols
+        items_in_row = min(max_cols, len(specs) - row * max_cols)
+        row_width = items_in_row * btn_w + (items_in_row - 1) * spacing
+        start_x = (w - row_width) // 2
+        rect = pygame.Rect(start_x + col * (btn_w + spacing), start_y + row * (btn_h + spacing), btn_w, btn_h)
+        layout.append({"rect": rect, **spec})
+    return layout
+
+
+def _draw_button(screen, font, label, rect, active=False, hover=False):
+    color = BTN_COLOR_ACTIVE if active else BTN_COLOR_HOVER if hover else BTN_COLOR
+    pygame.draw.rect(screen, color, rect, border_radius=8)
+    pygame.draw.rect(screen, (0, 0, 0), rect, width=2, border_radius=8)
+    text = font.render(label, True, TEXT_COLOR)
+    screen.blit(text, (rect.centerx - text.get_width() // 2, rect.centery - text.get_height() // 2))
+
+
+def draw_board(screen, font, button_layout, mouse_pos):
+    screen.fill(BG_COLOR)
     w, h = screen.get_size()
 
     board_rect = pygame.Rect(w // 4, h // 4, w // 2, h // 2)
-    pygame.draw.rect(screen, (200, 200, 200), board_rect, border_radius=20)
+    pygame.draw.rect(screen, BOARD_COLOR, board_rect, border_radius=20)
 
     pad_radius = 30
     sensor_positions = [
@@ -347,51 +449,115 @@ def draw_board(screen, font):
         (board_rect.right - pad_radius, board_rect.bottom - pad_radius),  # BR
     ]
 
-    max_val = max(max(raw_data), 1.0)
-    total_weight = sum(raw_data)
+    adjusted = _get_adjusted_data()
+    max_val = max(max(adjusted), 1.0)
+    total_weight = sum(adjusted)
 
     for i, pos in enumerate(sensor_positions):
-        intensity = max(min(255, int(255 * (raw_data[i] / max_val))), 0)
-        color = (intensity, 100, max(min(abs(255 - intensity), 255), 0))
+        intensity = max(min(255, int(255 * (adjusted[i] / max_val))), 0)
+        base = PAD_BASE_COLOR
+        color = (
+            min(255, base[0] + intensity // 3),
+            min(255, base[1] + intensity // 4),
+            min(255, base[2] + intensity // 5),
+        )
         pygame.draw.circle(screen, color, pos, pad_radius)
-        label = font.render(f"{raw_data[i]:.1f} Lbs", True, (0, 0, 0))
-        screen.blit(label, (pos[0] - 20, pos[1] - 10))
+        label = font.render(f"{adjusted[i]:.2f} lb", True, (10, 10, 10))
+        screen.blit(label, (pos[0] - 28, pos[1] - 10))
 
     if total_weight > 0:
-        top = raw_data[0] + raw_data[1]
-        bottom = raw_data[2] + raw_data[3]
-        left = raw_data[0] + raw_data[2]
-        right = raw_data[1] + raw_data[3]
+        top = adjusted[0] + adjusted[1]
+        bottom = adjusted[2] + adjusted[3]
+        left = adjusted[0] + adjusted[2]
+        right = adjusted[1] + adjusted[3]
 
         x = (right - left) / total_weight
         y = (bottom - top) / total_weight
 
         cx = board_rect.centerx + int((board_rect.width // 2 - 20) * x)
         cy = board_rect.centery + int((board_rect.height // 2 - 20) * y)
-        pygame.draw.circle(screen, (255, 0, 0), (cx, cy), 10)
+        pygame.draw.circle(screen, DOT_COLOR, (cx, cy), 10)
 
-    weight = font.render(f"Total Weight: {total_weight:.1f} Lbs", True, (255, 255, 255))
-    screen.blit(weight, (board_rect.right / 2, w / 1.25))
+    ounces = total_weight * 16.0
+    weight = font.render(
+        f"Total: {total_weight:.2f} Lbs / {ounces:.1f} oz   Mode: {'Exact' if exact_mode else 'Damped'}",
+        True,
+        TEXT_COLOR,
+    )
+    screen.blit(weight, (w // 2 - weight.get_width() // 2, board_rect.bottom + 10))
+
+    # Draw buttons
+    for btn in button_layout:
+        hover = btn["rect"].collidepoint(mouse_pos)
+        active = btn.get("active", False)
+        _draw_button(screen, font, btn["label"], btn["rect"], active=active, hover=hover)
+
     pygame.display.flip()
 
 
 ### --- Main ---
 def main():
+    global exact_mode
     pygame.init()
-    screen = pygame.display.set_mode((600, 600))
+    min_w, min_h = 600, 600
+    screen = pygame.display.set_mode((700, 650), pygame.RESIZABLE)
     pygame.display.set_caption("Wii Balance Board Visualizer + HID")
-    font = pygame.font.SysFont(None, 24)
+    font = pygame.font.SysFont("Segoe UI", 24)
+
+    button_specs = [
+        {"label": "Tare", "action": "tare"},
+        {"label": "Clear Tare", "action": "clear"},
+        {"label": "Exact Mode", "action": "exact"},
+        {"label": "TL +", "action": "corner", "corner": 0, "delta": TARE_STEP},
+        {"label": "TL -", "action": "corner", "corner": 0, "delta": -TARE_STEP},
+        {"label": "TR +", "action": "corner", "corner": 1, "delta": TARE_STEP},
+        {"label": "TR -", "action": "corner", "corner": 1, "delta": -TARE_STEP},
+        {"label": "BL +", "action": "corner", "corner": 2, "delta": TARE_STEP},
+        {"label": "BL -", "action": "corner", "corner": 2, "delta": -TARE_STEP},
+        {"label": "BR +", "action": "corner", "corner": 3, "delta": TARE_STEP},
+        {"label": "BR -", "action": "corner", "corner": 3, "delta": -TARE_STEP},
+    ]
 
     reader_thread = threading.Thread(target=start_board_reader, daemon=True)
     reader_thread.start()
 
     clock = pygame.time.Clock()
     while True:
+        mouse_pos = pygame.mouse.get_pos()
+        button_layout = _layout_buttons(*screen.get_size(), font, button_specs)
+        # Mark active state for exact mode button
+        for btn in button_layout:
+            if btn["action"] == "exact":
+                btn["active"] = exact_mode
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-        draw_board(screen, font)
+            if event.type == pygame.VIDEORESIZE:
+                new_w = max(min_w, event.w)
+                new_h = max(min_h, event.h)
+                screen = pygame.display.set_mode((new_w, new_h), pygame.RESIZABLE)
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                for btn in button_layout:
+                    if btn["rect"].collidepoint(event.pos):
+                        if btn["action"] == "tare":
+                            for i in range(4):
+                                tare_offset[i] = raw_data[i]
+                            print("Tare set to current readings.")
+                        elif btn["action"] == "clear":
+                            for i in range(4):
+                                tare_offset[i] = 0.0
+                            print("Tare reset to zero.")
+                        elif btn["action"] == "exact":
+                            exact_mode = not exact_mode
+                            print(f"Exact mode {'ON' if exact_mode else 'OFF'}.")
+                        elif btn["action"] == "corner":
+                            idx = btn["corner"]
+                            tare_offset[idx] = max(0.0, tare_offset[idx] + btn["delta"])
+                            label = ["TL", "TR", "BL", "BR"][idx]
+                            print(f"Tare {label} now {tare_offset[idx]:.2f} lb")
+                        break
+        draw_board(screen, font, button_layout, mouse_pos)
         clock.tick(30)
 
 
